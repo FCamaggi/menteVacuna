@@ -9,7 +9,7 @@ export class DatabaseManager {
 
   async connect() {
     const uri = process.env.MONGODB_URI;
-    
+
     if (!uri || uri.includes('localhost')) {
       console.log('MongoDB no configurado, usando modo memoria');
       this.useMemoryMode = true;
@@ -22,13 +22,13 @@ export class DatabaseManager {
       await this.client.connect();
       this.db = this.client.db();
       this.lobbies = this.db.collection('lobbies');
-      
+
       // Crear índice para expiración automática (lobbies antiguos)
       await this.lobbies.createIndex(
         { createdAt: 1 },
         { expireAfterSeconds: 86400 } // 24 horas
       );
-      
+
       console.log('MongoDB conectado exitosamente');
     } catch (error) {
       console.error('Error conectando a MongoDB, usando modo memoria:', error);
@@ -48,11 +48,11 @@ export class DatabaseManager {
 
     await this.lobbies.updateOne(
       { lobbyCode: lobbyData.lobbyCode },
-      { 
-        $set: { 
-          ...lobbyData, 
-          updatedAt: new Date() 
-        } 
+      {
+        $set: {
+          ...lobbyData,
+          updatedAt: new Date()
+        }
       },
       { upsert: true }
     );
@@ -90,11 +90,11 @@ export class DatabaseManager {
 
     await this.lobbies.updateOne(
       { lobbyCode },
-      { 
-        $set: { 
-          ...updates, 
-          updatedAt: new Date() 
-        } 
+      {
+        $set: {
+          ...updates,
+          updatedAt: new Date()
+        }
       }
     );
   }

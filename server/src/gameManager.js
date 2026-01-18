@@ -15,7 +15,7 @@ export class GameManager {
   async createLobby(socketId, playerName) {
     const lobbyCode = this.generateLobbyCode();
     const playerId = this.generatePlayerId();
-    
+
     const lobby = {
       lobbyCode,
       createdAt: new Date(),
@@ -50,7 +50,7 @@ export class GameManager {
   // Unirse a lobby
   async joinLobby(socketId, lobbyCode, playerName) {
     const lobby = await this.dbManager.getLobby(lobbyCode);
-    
+
     if (!lobby) {
       throw new Error('Lobby no encontrado');
     }
@@ -90,13 +90,13 @@ export class GameManager {
   // Reconectar jugador
   async reconnectPlayer(socketId, lobbyCode, playerId) {
     const lobby = await this.dbManager.getLobby(lobbyCode);
-    
+
     if (!lobby) {
       throw new Error('Lobby no encontrado');
     }
 
     const player = lobby.players.find(p => p.id === playerId);
-    
+
     if (!player) {
       throw new Error('Jugador no encontrado en este lobby');
     }
@@ -121,7 +121,7 @@ export class GameManager {
   // Iniciar juego
   async startGame(lobbyCode) {
     const lobby = await this.dbManager.getLobby(lobbyCode);
-    
+
     if (!lobby) {
       throw new Error('Lobby no encontrado');
     }
@@ -156,7 +156,7 @@ export class GameManager {
   // Seleccionar pregunta (vaquero)
   async selectQuestion(lobbyCode, playerId, selectedIndex) {
     const lobby = await this.dbManager.getLobby(lobbyCode);
-    
+
     if (!lobby) {
       throw new Error('Lobby no encontrado');
     }
@@ -173,10 +173,10 @@ export class GameManager {
     // Guardar la pregunta seleccionada
     lobby.currentQuestion = lobby.questionOptions[selectedIndex];
     lobby.usedQuestions.push(lobby.currentQuestion);
-    
+
     // La pregunta no seleccionada vuelve a estar disponible
     // (no se añade a usedQuestions)
-    
+
     lobby.gameState = 'answering';
     lobby.questionOptions = null;
 
@@ -192,7 +192,7 @@ export class GameManager {
   // Enviar respuesta
   async submitAnswer(lobbyCode, playerId, answer) {
     const lobby = await this.dbManager.getLobby(lobbyCode);
-    
+
     if (!lobby) {
       throw new Error('Lobby no encontrado');
     }
@@ -217,7 +217,7 @@ export class GameManager {
     await this.dbManager.saveLobby(lobby);
 
     const allAnswered = lobby.answers.length === lobby.players.length;
-    
+
     if (allAnswered) {
       lobby.gameState = 'voting';
       lobby.votes = [];
@@ -236,7 +236,7 @@ export class GameManager {
   // Enviar votos
   async submitVotes(lobbyCode, playerId, votedPlayerIds) {
     const lobby = await this.dbManager.getLobby(lobbyCode);
-    
+
     if (!lobby) {
       throw new Error('Lobby no encontrado');
     }
@@ -259,7 +259,7 @@ export class GameManager {
     await this.dbManager.saveLobby(lobby);
 
     const allVoted = lobby.votes.length === lobby.players.length;
-    
+
     let roundResults = null;
     if (allVoted) {
       roundResults = await this.calculateVotingResults(lobby);
@@ -277,7 +277,7 @@ export class GameManager {
   async calculateVotingResults(lobby) {
     const playerIds = lobby.players.map(p => p.id);
     const parent = {};
-    
+
     // Inicializar union-find
     playerIds.forEach(id => {
       parent[id] = id;
@@ -317,18 +317,21 @@ export class GameManager {
       groups[root].push(id);
     });
 
-    // Encontrar el grupo mayoritario
-    let largestGroup = [];
+    // Encontrar el grupo mayoritario (solo si no hay empate)
+    let largestGroups = [];
     let maxSize = 0;
-    
+
     Object.values(groups).forEach(group => {
       if (group.length > maxSize) {
         maxSize = group.length;
-        largestGroup = group;
+        largestGroups = [group];
+      } else if (group.length === maxSize && group.length > 1) {
+        largestGroups.push(group);
       }
     });
 
-    const majorityGroup = maxSize > 1 ? largestGroup : null;
+    // Solo hay mayoría si hay UN SOLO grupo más grande y tiene 2+ jugadores
+    const majorityGroup = (largestGroups.length === 1 && maxSize > 1) ? largestGroups[0] : null;
 
     // Identificar jugadores únicos (nadie votó que son iguales)
     const uniquePlayers = [];
@@ -336,7 +339,7 @@ export class GameManager {
       if (group.length === 1) {
         const playerId = group[0];
         // Verificar que nadie votó por él (excepto él mismo)
-        const votedByOthers = lobby.votes.some(vote => 
+        const votedByOthers = lobby.votes.some(vote =>
           vote.playerId !== playerId && vote.votedFor.includes(playerId)
         );
         if (!votedByOthers) {
@@ -347,7 +350,7 @@ export class GameManager {
 
     // Actualizar puntuaciones y vaca rosa
     const results = [];
-    
+
     // Primero, quitar la vaca rosa de todos
     lobby.players.forEach(player => {
       player.hasPinkCow = false;
@@ -355,7 +358,7 @@ export class GameManager {
 
     lobby.answers.forEach(({ playerId, playerName, answer }) => {
       const player = lobby.players.find(p => p.id === playerId);
-      
+
       let scored = false;
       let gotPinkCow = false;
 
@@ -382,12 +385,17 @@ export class GameManager {
       });
     });
 
-    // Verificar ganador
-    const winner = lobby.players.find(p => p.score >= 8 && !p.hasPinkCow);
+    // Verificar ganador (solo si hay UNO que cumpla la condición)
+    const potentialWinners = lobby.players.filter(p => p.score >= 8 && !p.hasPinkCow);
     
-    if (winner) {
+    let winner = null;
+    if (potentialWinners.length === 1) {
+      winner = potentialWinners[0];
       lobby.gameState = 'finished';
       lobby.winner = winner;
+    } else if (potentialWinners.length > 1) {
+      // Múltiples jugadores con 8+ puntos sin vaca rosa: continuar jugando
+      lobby.gameState = 'results';
     } else {
       lobby.gameState = 'results';
     }
@@ -415,16 +423,16 @@ export class GameManager {
   // Siguiente ronda
   async nextRound(lobbyCode) {
     const lobby = await this.dbManager.getLobby(lobbyCode);
-    
+
     if (!lobby) {
       throw new Error('Lobby no encontrado');
     }
 
     lobby.currentRound += 1;
-    
+
     // Rotar al siguiente vaquero
     lobby.currentCowboyIndex = (lobby.currentCowboyIndex + 1) % lobby.players.length;
-    
+
     lobby.questionOptions = [
       this.getRandomQuestion(lobby.usedQuestions),
       this.getRandomQuestion(lobby.usedQuestions)
@@ -448,7 +456,7 @@ export class GameManager {
   // Reiniciar juego
   async restartGame(lobbyCode) {
     const lobby = await this.dbManager.getLobby(lobbyCode);
-    
+
     if (!lobby) {
       throw new Error('Lobby no encontrado');
     }
@@ -462,7 +470,7 @@ export class GameManager {
     lobby.votes = [];
     lobby.usedQuestions = [];
     lobby.winner = null;
-    
+
     lobby.players.forEach(player => {
       player.score = 0;
       player.hasPinkCow = false;
@@ -471,13 +479,44 @@ export class GameManager {
     await this.dbManager.saveLobby(lobby);
   }
 
+  // Abandonar juego completamente
+  async leaveGame(socketId, lobbyCode, playerId) {
+    const lobby = await this.dbManager.getLobby(lobbyCode);
+    
+    if (!lobby) {
+      return; // Lobby no existe, no hay nada que hacer
+    }
+
+    // Eliminar jugador del lobby
+    lobby.players = lobby.players.filter(p => p.id !== playerId);
+    
+    // Si era el host, asignar nuevo host
+    if (lobby.host === playerId && lobby.players.length > 0) {
+      lobby.host = lobby.players[0].id;
+    }
+    
+    // Si no quedan jugadores, eliminar el lobby
+    if (lobby.players.length === 0) {
+      await this.dbManager.deleteLobby(lobbyCode);
+    } else {
+      await this.dbManager.saveLobby(lobby);
+    }
+    
+    this.socketToPlayer.delete(socketId);
+    
+    return {
+      remainingPlayers: lobby.players.length,
+      newHost: lobby.players.length > 0 ? lobby.host : null
+    };
+  }
+
   // Manejar desconexión
   handleDisconnect(socketId) {
     const playerInfo = this.socketToPlayer.get(socketId);
-    
+
     if (playerInfo) {
       const { lobbyCode, playerId } = playerInfo;
-      
+
       // Marcar jugador como desconectado (no eliminarlo para permitir reconexión)
       this.dbManager.getLobby(lobbyCode).then(lobby => {
         if (lobby) {
@@ -488,7 +527,7 @@ export class GameManager {
           }
         }
       });
-      
+
       this.socketToPlayer.delete(socketId);
     }
   }
@@ -496,12 +535,12 @@ export class GameManager {
   // Obtener pregunta aleatoria
   getRandomQuestion(usedQuestions) {
     const availableQuestions = QUESTIONS.filter(q => !usedQuestions.includes(q));
-    
+
     if (availableQuestions.length === 0) {
       // Si se acabaron las preguntas, reiniciar el pool
       return QUESTIONS[Math.floor(Math.random() * QUESTIONS.length)];
     }
-    
+
     return availableQuestions[Math.floor(Math.random() * availableQuestions.length)];
   }
 

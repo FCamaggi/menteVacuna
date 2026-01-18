@@ -200,6 +200,24 @@ function App() {
       setWinner(null);
     });
 
+    socket.on('gameLeft', () => {
+      localStorage.removeItem('menteVacunaSession');
+      setGameState('menu');
+      setLobbyCode('');
+      setPlayerId('');
+      setPlayers([]);
+    });
+
+    socket.on('playerLeft', (data) => {
+      // Actualizar lista de jugadores cuando alguien se va
+      setPlayers(prevPlayers => prevPlayers.filter(p => p.id !== data.playerId));
+      
+      // Si el nuevo host soy yo, actualizar
+      if (data.newHost === playerId) {
+        setIsHost(true);
+      }
+    });
+
     socket.on('error', (data) => {
       setError(data.message);
       setTimeout(() => setError(''), 5000);
@@ -220,6 +238,8 @@ function App() {
       socket.off('roundComplete');
       socket.off('newRound');
       socket.off('gameRestarted');
+      socket.off('gameLeft');
+      socket.off('playerLeft');
       socket.off('error');
     };
   }, [socket, playerId, players.length]);
@@ -294,6 +314,12 @@ function App() {
   const leaveLobby = () => {
     localStorage.removeItem('menteVacunaSession');
     window.location.reload();
+  };
+
+  const leaveGame = () => {
+    if (confirm('¿Estás seguro de que quieres abandonar el juego? Perderás todo tu progreso.')) {
+      socket.emit('leaveGame', { lobbyCode, playerId });
+    }
   };
 
   const getCowboyName = () => {
@@ -459,6 +485,10 @@ function App() {
             🤠 {getCowboyName()} está eligiendo la pregunta...
           </div>
         )}
+
+        <button className="btn btn-secondary" onClick={leaveGame} style={{ marginTop: '20px' }}>
+          Abandonar Juego
+        </button>
       </div>
     );
   }
@@ -519,6 +549,10 @@ function App() {
             </div>
           )}
         </div>
+
+        <button className="btn btn-secondary" onClick={leaveGame} style={{ marginTop: '20px' }}>
+          Abandonar Juego
+        </button>
       </div>
     );
   }
@@ -592,6 +626,10 @@ function App() {
             </div>
           </div>
         )}
+
+        <button className="btn btn-secondary" onClick={leaveGame} style={{ marginTop: '20px' }}>
+          Abandonar Juego
+        </button>
       </div>
     );
   }
@@ -660,6 +698,10 @@ function App() {
         {!isHost && (
           <p className="game-status">Esperando que el anfitrión inicie la siguiente ronda...</p>
         )}
+
+        <button className="btn btn-secondary" onClick={leaveGame} style={{ marginTop: '10px' }}>
+          Abandonar Juego
+        </button>
       </div>
     );
   }

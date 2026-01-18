@@ -50,10 +50,10 @@ io.on('connection', (socket) => {
     try {
       const result = await gameManager.joinLobby(socket.id, lobbyCode, playerName);
       socket.join(lobbyCode);
-      
+
       // Notificar al jugador que se unió
       socket.emit('lobbyJoined', result);
-      
+
       // Notificar a todos en el lobby
       io.to(lobbyCode).emit('playerJoined', {
         players: result.players,
@@ -70,7 +70,7 @@ io.on('connection', (socket) => {
       const result = await gameManager.reconnectPlayer(socket.id, lobbyCode, playerId);
       socket.join(lobbyCode);
       socket.emit('reconnected', result);
-      
+
       // Notificar a otros jugadores que el jugador se reconectó
       socket.to(lobbyCode).emit('playerReconnected', {
         playerId,
@@ -105,16 +105,16 @@ io.on('connection', (socket) => {
   socket.on('submitAnswer', async ({ lobbyCode, playerId, answer }) => {
     try {
       const result = await gameManager.submitAnswer(lobbyCode, playerId, answer);
-      
+
       // Notificar al jugador
       socket.emit('answerSubmitted');
-      
+
       // Notificar a todos sobre el progreso
       io.to(lobbyCode).emit('answerProgress', {
         submittedCount: result.submittedCount,
         totalPlayers: result.totalPlayers
       });
-      
+
       // Si todos respondieron, pasar a votación
       if (result.allAnswered) {
         io.to(lobbyCode).emit('startVoting', {
@@ -131,16 +131,16 @@ io.on('connection', (socket) => {
   socket.on('submitVotes', async ({ lobbyCode, playerId, votedPlayerIds }) => {
     try {
       const result = await gameManager.submitVotes(lobbyCode, playerId, votedPlayerIds);
-      
+
       // Notificar al jugador
       socket.emit('votesSubmitted');
-      
+
       // Notificar a todos sobre el progreso
       io.to(lobbyCode).emit('votingProgress', {
         votedCount: result.votedCount,
         totalPlayers: result.totalPlayers
       });
-      
+
       // Si todos votaron, revelar resultados
       if (result.allVoted) {
         io.to(lobbyCode).emit('roundComplete', result.roundResults);
@@ -170,6 +170,30 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Abandonar juego
+  socket.on('leaveGame', async ({ lobbyCode, playerId }) => {
+    try {
+      const result = await gameManager.leaveGame(socket.id, lobbyCode, playerId);
+      
+      // Notificar al jugador que salió
+      socket.emit('gameLeft');
+      
+      // Notificar a los demás jugadores
+      if (result && result.remainingPlayers > 0) {
+        io.to(lobbyCode).emit('playerLeft', {
+          playerId,
+          remainingPlayers: result.remainingPlayers,
+          newHost: result.newHost
+        });
+      }
+      
+      // Hacer que el socket salga del room
+      socket.leave(lobbyCode);
+    } catch (error) {
+      socket.emit('error', { message: error.message });
+    }
+  });
+
   // Desconexión
   socket.on('disconnect', () => {
     console.log(`Cliente desconectado: ${socket.id}`);
@@ -184,7 +208,7 @@ async function start() {
   try {
     await dbManager.connect();
     console.log('Base de datos conectada');
-    
+
     httpServer.listen(PORT, () => {
       console.log(`Servidor corriendo en puerto ${PORT}`);
     });

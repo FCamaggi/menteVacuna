@@ -91,6 +91,16 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Seleccionar pregunta (vaquero)
+  socket.on('selectQuestion', async ({ lobbyCode, playerId, selectedIndex }) => {
+    try {
+      const result = await gameManager.selectQuestion(lobbyCode, playerId, selectedIndex);
+      io.to(lobbyCode).emit('questionSelected', result);
+    } catch (error) {
+      socket.emit('error', { message: error.message });
+    }
+  });
+
   // Enviar respuesta
   socket.on('submitAnswer', async ({ lobbyCode, playerId, answer }) => {
     try {
@@ -105,8 +115,34 @@ io.on('connection', (socket) => {
         totalPlayers: result.totalPlayers
       });
       
-      // Si todos respondieron, revelar resultados
+      // Si todos respondieron, pasar a votación
       if (result.allAnswered) {
+        io.to(lobbyCode).emit('startVoting', {
+          answers: result.answers,
+          gameState: result.gameState
+        });
+      }
+    } catch (error) {
+      socket.emit('error', { message: error.message });
+    }
+  });
+
+  // Enviar votos
+  socket.on('submitVotes', async ({ lobbyCode, playerId, votedPlayerIds }) => {
+    try {
+      const result = await gameManager.submitVotes(lobbyCode, playerId, votedPlayerIds);
+      
+      // Notificar al jugador
+      socket.emit('votesSubmitted');
+      
+      // Notificar a todos sobre el progreso
+      io.to(lobbyCode).emit('votingProgress', {
+        votedCount: result.votedCount,
+        totalPlayers: result.totalPlayers
+      });
+      
+      // Si todos votaron, revelar resultados
+      if (result.allVoted) {
         io.to(lobbyCode).emit('roundComplete', result.roundResults);
       }
     } catch (error) {

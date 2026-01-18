@@ -113,7 +113,8 @@ export class GameManager {
       playerId,
       playerName: player.name,
       isHost: lobby.host === playerId,
-      lobby
+      lobby,
+      cowboyId: lobby.currentCowboyIndex !== undefined ? lobby.players[lobby.currentCowboyIndex].id : null
     };
   }
 
@@ -129,17 +130,60 @@ export class GameManager {
       throw new Error('Se necesitan al menos 2 jugadores');
     }
 
-    lobby.gameState = 'playing';
+    lobby.gameState = 'choosing_question';
     lobby.currentRound = 1;
-    lobby.currentQuestion = this.getRandomQuestion(lobby.usedQuestions);
-    lobby.usedQuestions.push(lobby.currentQuestion);
+    lobby.currentCowboyIndex = 0; // Índice del vaquero actual
+    lobby.questionOptions = [
+      this.getRandomQuestion(lobby.usedQuestions || []),
+      this.getRandomQuestion(lobby.usedQuestions || [])
+    ];
+    lobby.currentQuestion = null;
     lobby.answers = [];
+    lobby.votes = [];
+    lobby.usedQuestions = lobby.usedQuestions || [];
 
     await this.dbManager.saveLobby(lobby);
 
     return {
       gameState: lobby.gameState,
       currentRound: lobby.currentRound,
+      cowboyId: lobby.players[lobby.currentCowboyIndex].id,
+      questionOptions: lobby.questionOptions,
+      players: lobby.players
+    };
+  }
+
+  // Seleccionar pregunta (vaquero)
+  async selectQuestion(lobbyCode, playerId, selectedIndex) {
+    const lobby = await this.dbManager.getLobby(lobbyCode);
+    
+    if (!lobby) {
+      throw new Error('Lobby no encontrado');
+    }
+
+    const cowboy = lobby.players[lobby.currentCowboyIndex];
+    if (cowboy.id !== playerId) {
+      throw new Error('No eres el vaquero de esta ronda');
+    }
+
+    if (selectedIndex < 0 || selectedIndex > 1) {
+      throw new Error('Índice de pregunta inválido');
+    }
+
+    // Guardar la pregunta seleccionada
+    lobby.currentQuestion = lobby.questionOptions[selectedIndex];
+    lobby.usedQuestions.push(lobby.currentQuestion);
+    
+    // La pregunta no seleccionada vuelve a estar disponible
+    // (no se añade a usedQuestions)
+    
+    lobby.gameState = 'answering';
+    lobby.questionOptions = null;
+
+    await this.dbManager.saveLobby(lobby);
+
+    return {
+      gameState: lobby.gameState,
       question: lobby.currentQuestion,
       players: lobby.players
     };
@@ -153,8 +197,8 @@ export class GameManager {
       throw new Error('Lobby no encontrado');
     }
 
-    if (lobby.gameState !== 'playing') {
-      throw new Error('El juego no está en curso');
+    if (lobby.gameState !== 'answering') {
+      throw new Error('No es el momento de responder');
     }
 
     // Verificar si ya respondió
@@ -162,58 +206,144 @@ export class GameManager {
       throw new Error('Ya has enviado tu respuesta');
     }
 
+    const player = lobby.players.find(p => p.id === playerId);
+
     lobby.answers.push({
       playerId,
-      answer: answer.trim().toLowerCase()
+      playerName: player.name,
+      answer: answer.trim()
     });
 
     await this.dbManager.saveLobby(lobby);
 
     const allAnswered = lobby.answers.length === lobby.players.length;
     
-    let roundResults = null;
     if (allAnswered) {
-      roundResults = await this.calculateRoundResults(lobby);
+      lobby.gameState = 'voting';
+      lobby.votes = [];
+      await this.dbManager.saveLobby(lobby);
     }
 
     return {
       submittedCount: lobby.answers.length,
       totalPlayers: lobby.players.length,
       allAnswered,
+      answers: allAnswered ? lobby.answers : null,
+      gameState: allAnswered ? 'voting' : lobby.gameState
+    };
+  }
+
+  // Enviar votos
+  async submitVotes(lobbyCode, playerId, votedPlayerIds) {
+    const lobby = await this.dbManager.getLobby(lobbyCode);
+    
+    if (!lobby) {
+      throw new Error('Lobby no encontrado');
+    }
+
+    if (lobby.gameState !== 'voting') {
+      throw new Error('No es el momento de votar');
+    }
+
+    // Verificar si ya votó
+    const existingVote = lobby.votes.find(v => v.playerId === playerId);
+    if (existingVote) {
+      throw new Error('Ya has enviado tus votos');
+    }
+
+    lobby.votes.push({
+      playerId,
+      votedFor: votedPlayerIds
+    });
+
+    await this.dbManager.saveLobby(lobby);
+
+    const allVoted = lobby.votes.length === lobby.players.length;
+    
+    let roundResults = null;
+    if (allVoted) {
+      roundResults = await this.calculateVotingResults(lobby);
+    }
+
+    return {
+      votedCount: lobby.votes.length,
+      totalPlayers: lobby.players.length,
+      allVoted,
       roundResults
     };
   }
 
-  // Calcular resultados de la ronda
-  async calculateRoundResults(lobby) {
-    const answerCounts = {};
+  // Calcular resultados usando lógica de union-find
+  async calculateVotingResults(lobby) {
+    const playerIds = lobby.players.map(p => p.id);
+    const parent = {};
     
-    // Contar respuestas
-    lobby.answers.forEach(({ answer }) => {
-      answerCounts[answer] = (answerCounts[answer] || 0) + 1;
+    // Inicializar union-find
+    playerIds.forEach(id => {
+      parent[id] = id;
     });
 
-    // Encontrar la respuesta mayoritaria
-    let maxCount = 0;
-    let majorityAnswers = [];
+    // Función find con compresión de camino
+    function find(x) {
+      if (parent[x] !== x) {
+        parent[x] = find(parent[x]);
+      }
+      return parent[x];
+    }
+
+    // Función union
+    function union(x, y) {
+      const rootX = find(x);
+      const rootY = find(y);
+      if (rootX !== rootY) {
+        parent[rootX] = rootY;
+      }
+    }
+
+    // Procesar votos: si A votó por B, entonces A y B son del mismo grupo
+    lobby.votes.forEach(vote => {
+      vote.votedFor.forEach(votedId => {
+        union(vote.playerId, votedId);
+      });
+    });
+
+    // Agrupar jugadores por sus raíces
+    const groups = {};
+    playerIds.forEach(id => {
+      const root = find(id);
+      if (!groups[root]) {
+        groups[root] = [];
+      }
+      groups[root].push(id);
+    });
+
+    // Encontrar el grupo mayoritario
+    let largestGroup = [];
+    let maxSize = 0;
     
-    Object.entries(answerCounts).forEach(([answer, count]) => {
-      if (count > maxCount) {
-        maxCount = count;
-        majorityAnswers = [answer];
-      } else if (count === maxCount && count > 1) {
-        majorityAnswers.push(answer);
+    Object.values(groups).forEach(group => {
+      if (group.length > maxSize) {
+        maxSize = group.length;
+        largestGroup = group;
       }
     });
 
-    // Solo hay mayoría si hay una respuesta clara (no empate)
-    const hasMajority = majorityAnswers.length === 1 && maxCount > 1;
-    const majorityAnswer = hasMajority ? majorityAnswers[0] : null;
+    const majorityGroup = maxSize > 1 ? largestGroup : null;
 
-    // Identificar respuestas únicas
-    const uniqueAnswers = Object.entries(answerCounts)
-      .filter(([_, count]) => count === 1)
-      .map(([answer]) => answer);
+    // Identificar jugadores únicos (nadie votó que son iguales)
+    const uniquePlayers = [];
+    Object.values(groups).forEach(group => {
+      if (group.length === 1) {
+        const playerId = group[0];
+        // Verificar que nadie votó por él (excepto él mismo)
+        const votedByOthers = lobby.votes.some(vote => 
+          vote.playerId !== playerId && vote.votedFor.includes(playerId)
+        );
+        if (!votedByOthers) {
+          uniquePlayers.push(playerId);
+        }
+      }
+    });
 
     // Actualizar puntuaciones y vaca rosa
     const results = [];
@@ -223,21 +353,20 @@ export class GameManager {
       player.hasPinkCow = false;
     });
 
-    lobby.answers.forEach(({ playerId, answer }) => {
+    lobby.answers.forEach(({ playerId, playerName, answer }) => {
       const player = lobby.players.find(p => p.id === playerId);
-      const playerName = player.name;
       
       let scored = false;
       let gotPinkCow = false;
 
-      // Dar puntos a respuestas mayoritarias
-      if (hasMajority && answer === majorityAnswer) {
+      // Dar puntos a jugadores del grupo mayoritario
+      if (majorityGroup && majorityGroup.includes(playerId)) {
         player.score += 1;
         scored = true;
       }
 
-      // Dar vaca rosa a respuestas únicas
-      if (uniqueAnswers.includes(answer)) {
+      // Dar vaca rosa a jugadores únicos
+      if (uniquePlayers.includes(playerId)) {
         player.hasPinkCow = true;
         gotPinkCow = true;
       }
@@ -248,7 +377,8 @@ export class GameManager {
         answer,
         scored,
         gotPinkCow,
-        newScore: player.score
+        newScore: player.score,
+        groupSize: groups[find(playerId)].length
       });
     });
 
@@ -258,15 +388,21 @@ export class GameManager {
     if (winner) {
       lobby.gameState = 'finished';
       lobby.winner = winner;
+    } else {
+      lobby.gameState = 'results';
     }
 
     await this.dbManager.saveLobby(lobby);
 
     return {
       results,
-      majorityAnswer,
-      answerCounts,
+      groups: Object.values(groups).map(group => ({
+        playerIds: group,
+        size: group.length
+      })),
+      majorityGroup,
       players: lobby.players,
+      votes: lobby.votes,
       winner: winner ? {
         id: winner.id,
         name: winner.name,
@@ -285,15 +421,26 @@ export class GameManager {
     }
 
     lobby.currentRound += 1;
-    lobby.currentQuestion = this.getRandomQuestion(lobby.usedQuestions);
-    lobby.usedQuestions.push(lobby.currentQuestion);
+    
+    // Rotar al siguiente vaquero
+    lobby.currentCowboyIndex = (lobby.currentCowboyIndex + 1) % lobby.players.length;
+    
+    lobby.questionOptions = [
+      this.getRandomQuestion(lobby.usedQuestions),
+      this.getRandomQuestion(lobby.usedQuestions)
+    ];
+    lobby.currentQuestion = null;
     lobby.answers = [];
+    lobby.votes = [];
+    lobby.gameState = 'choosing_question';
 
     await this.dbManager.saveLobby(lobby);
 
     return {
       currentRound: lobby.currentRound,
-      question: lobby.currentQuestion,
+      gameState: lobby.gameState,
+      cowboyId: lobby.players[lobby.currentCowboyIndex].id,
+      questionOptions: lobby.questionOptions,
       players: lobby.players
     };
   }
@@ -308,8 +455,11 @@ export class GameManager {
 
     lobby.gameState = 'waiting';
     lobby.currentRound = 0;
+    lobby.currentCowboyIndex = 0;
     lobby.currentQuestion = null;
+    lobby.questionOptions = null;
     lobby.answers = [];
+    lobby.votes = [];
     lobby.usedQuestions = [];
     lobby.winner = null;
     

@@ -273,7 +273,7 @@ export class GameManager {
     };
   }
 
-  // Calcular resultados usando lógica de union-find
+  // Calcular resultados usando lógica de votación bidireccional
   async calculateVotingResults(lobby) {
     const playerIds = lobby.players.map(p => p.id);
     const parent = {};
@@ -300,10 +300,23 @@ export class GameManager {
       }
     }
 
-    // Procesar votos: si A votó por B, entonces A y B son del mismo grupo
+    // Procesar votos con lógica bidireccional:
+    // A y B solo se unen si AMBOS votaron el uno por el otro (o están conectados transitivamente)
+    // Crear un mapa de quién votó por quién
+    const votesMap = new Map();
     lobby.votes.forEach(vote => {
-      vote.votedFor.forEach(votedId => {
-        union(vote.playerId, votedId);
+      votesMap.set(vote.playerId, vote.votedFor);
+    });
+
+    // Unir jugadores solo si ambos votaron el uno por el otro
+    playerIds.forEach(playerA => {
+      const votesFromA = votesMap.get(playerA) || [];
+      votesFromA.forEach(playerB => {
+        const votesFromB = votesMap.get(playerB) || [];
+        // Si A votó por B Y B votó por A, se unen
+        if (votesFromB.includes(playerA)) {
+          union(playerA, playerB);
+        }
       });
     });
 
@@ -333,28 +346,28 @@ export class GameManager {
     // Solo hay mayoría si hay UN SOLO grupo más grande y tiene 2+ jugadores
     const majorityGroup = (largestGroups.length === 1 && maxSize > 1) ? largestGroups[0] : null;
 
-    // Identificar jugadores únicos (nadie votó que son iguales)
+    // Identificar jugadores únicos (grupos de tamaño 1)
     const uniquePlayers = [];
     Object.values(groups).forEach(group => {
       if (group.length === 1) {
-        const playerId = group[0];
-        // Verificar que nadie votó por él (excepto él mismo)
-        const votedByOthers = lobby.votes.some(vote =>
-          vote.playerId !== playerId && vote.votedFor.includes(playerId)
-        );
-        if (!votedByOthers) {
-          uniquePlayers.push(playerId);
-        }
+        uniquePlayers.push(group[0]);
       }
     });
 
+    // La vaca rosa solo se da si hay EXACTAMENTE UN jugador único
+    // Si hay 0 o más de 1, nadie la recibe (porque solo existe una vaca rosa)
+    const shouldGivePinkCow = uniquePlayers.length === 1;
+    const pinkCowReceiver = shouldGivePinkCow ? uniquePlayers[0] : null;
+
+    // Si hay un nuevo receptor de vaca rosa, quitársela a todos primero
+    if (pinkCowReceiver) {
+      lobby.players.forEach(player => {
+        player.hasPinkCow = false;
+      });
+    }
+
     // Actualizar puntuaciones y vaca rosa
     const results = [];
-
-    // Primero, quitar la vaca rosa de todos
-    lobby.players.forEach(player => {
-      player.hasPinkCow = false;
-    });
 
     lobby.answers.forEach(({ playerId, playerName, answer }) => {
       const player = lobby.players.find(p => p.id === playerId);
@@ -368,8 +381,8 @@ export class GameManager {
         scored = true;
       }
 
-      // Dar vaca rosa a jugadores únicos
-      if (uniquePlayers.includes(playerId)) {
+      // Dar vaca rosa solo si hay exactamente un jugador único
+      if (pinkCowReceiver && playerId === pinkCowReceiver) {
         player.hasPinkCow = true;
         gotPinkCow = true;
       }
